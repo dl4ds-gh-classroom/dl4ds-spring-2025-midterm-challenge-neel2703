@@ -1,7 +1,4 @@
 import torch
-input(torch.cuda.is_available())
-input(torch.cuda.current_device())
-input(torch.cuda.get_device_name(torch.cuda.current_device()))
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
@@ -97,6 +94,10 @@ def validate(model, valloader, criterion, device):
     val_acc = 100. * correct / total
     return val_loss, val_acc
 
+def unfreeze_layers(model, num_layers):
+    for param in list(model.parameters())[-num_layers:]:
+        param.requires_grad = True
+
 def main():
     ############################################################################
     # Configuration Dictionary (Modify as needed)
@@ -106,11 +107,11 @@ def main():
         # "SimpleCNN" for a manually defined simple network,
         # "ResNet18" for a more sophisticated network,
         # "PretrainedResNet18" for transfer learning.
-        "model": "PretrainedResNet18",
-        "batch_size": 8, 
-        "learning_rate": 0.1,
-        "epochs": 10,  # Increase for a real training run
-        "num_workers": 4,
+        "model": "PretrainedResNet50",
+        "batch_size": 32, 
+        "learning_rate": 0.001,
+        "epochs": 100,  # Increase for a real training run
+        "num_workers": 0,
         "device": "cuda" if torch.cuda.is_available() else "cpu",
         "data_dir": "./data",  # Make sure this directory exists
         "ood_dir": "./data/ood-test",
@@ -126,14 +127,16 @@ def main():
     # Data Transformation
     ############################################################################
     transform_train = transforms.Compose([
+        transforms.RandomCrop(32, padding=4),
+        transforms.RandomHorizontalFlip(),
         transforms.ToTensor(),
-        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+        transforms.Normalize((0.5071, 0.4867, 0.4408), (0.2675, 0.2565, 0.2761)),
     ])
 
     # Validation and test transforms (no augmentation)
     transform_test = transforms.Compose([
         transforms.ToTensor(),
-        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+        transforms.Normalize((0.5071, 0.4867, 0.4408), (0.2675, 0.2565, 0.2761)),
     ])
 
     ############################################################################
@@ -143,7 +146,7 @@ def main():
     full_trainset = torchvision.datasets.CIFAR100(root=CONFIG["data_dir"], train=True,
                                                   download=True, transform=transform_train)
 
-    # Split into training and validation (80/20 split)
+    # Split into training and validation (80/20 split) 
     train_size = int(0.8 * len(full_trainset))
     val_size = len(full_trainset) - train_size
     trainset, valset = torch.utils.data.random_split(full_trainset, [train_size, val_size])
@@ -169,6 +172,20 @@ def main():
         model = torchvision.models.resnet18(pretrained=True)
         num_ftrs = model.fc.in_features
         model.fc = nn.Linear(num_ftrs, 100)
+    elif CONFIG["model"] == "PretrainedResNet50":
+        # Transfer learning: start from pretrained ResNet18 and fine-tune
+        model = torchvision.models.resnet50(pretrained=True)
+        num_ftrs = model.fc.in_features
+        model.fc = nn.Linear(num_ftrs, 100)
+        for param in list(model.parameters())[:-2]:
+            param.requires_grad = False
+    elif CONFIG["model"] == "PretrainedWideResNet101":
+        # Transfer learning: start from pretrained ResNet18 and fine-tune
+        model = torch.hub.load('pytorch/vision:v0.10.0', 'wide_resnet101_2', pretrained=True)
+        num_ftrs = model.fc.in_features
+        model.fc = nn.Linear(num_ftrs, 100)
+        for param in list(model.parameters())[:-2]:
+            param.requires_grad = False
     else:
         raise ValueError("Unsupported model type selected.")
 
@@ -191,39 +208,51 @@ def main():
     ############################################################################
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.SGD(model.parameters(), lr=CONFIG["learning_rate"], momentum=0.9)
-    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
+    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=25, gamma=0.9)
 
     # Initialize wandb
-    wandb.init(project=CONFIG["wandb_project"], config=CONFIG)
-    wandb.watch(model)
+    # wandb.init(project=CONFIG["wandb_project"], config=CONFIG)
+    # wandb.watch(model)
+    model_name = CONFIG["model"]
+    epochs_num = CONFIG["epochs"]
 
     ############################################################################
     # Training Loop
     ############################################################################
     best_val_acc = 0.0
 
+    # for epoch in range(CONFIG["epochs"]):
+        # train_loss, train_acc = train(epoch, model, trainloader, optimizer, criterion, CONFIG)
+        # val_loss, val_acc = validate(model, valloader, criterion, CONFIG["device"])
+        # scheduler.step()
+
+        # Log metrics to WandB
+        # wandb.log({
+        #     "epoch": epoch + 1,
+        #     "train_loss": train_loss,
+        #     "train_acc": train_acc,
+        #     "val_loss": val_loss,
+        #     "val_acc": val_acc,
+        #     "lr": optimizer.param_groups[0]["lr"]
+        # })
+
+
     for epoch in range(CONFIG["epochs"]):
+        if epoch == 40:  # After 30 epochs, unfreeze the last convolutional block
+            unfreeze_layers(model, 33)  # ResNet50's last block has 33 layers
+        elif epoch == 75:  # After 60 epochs, unfreeze all layers
+            unfreeze_layers(model, len(list(model.parameters())))
+            
         train_loss, train_acc = train(epoch, model, trainloader, optimizer, criterion, CONFIG)
         val_loss, val_acc = validate(model, valloader, criterion, CONFIG["device"])
         scheduler.step()
-
-        # Log metrics to WandB
-        wandb.log({
-            "epoch": epoch + 1,
-            "train_loss": train_loss,
-            "train_acc": train_acc,
-            "val_loss": val_loss,
-            "val_acc": val_acc,
-            "lr": optimizer.param_groups[0]["lr"]
-        })
-
         # Save the best model based on validation accuracy
-        if val_acc > best_val_acc:
-            best_val_acc = val_acc
-            torch.save(model.state_dict(), "best_model.pth")
+        if int(epoch) % 15 == 0:
+            # best_val_acc = val_acc
+            torch.save(model.state_dict(), f"model_ckpts/{model_name}_{epoch}.pth")
             # wandb.save("best_model.pth")
     
-    wandb.finish()
+    # wandb.finish()
 
     ############################################################################
     # Evaluation -- using provided evaluation functions
@@ -240,8 +269,10 @@ def main():
 
     # Create Submission File (OOD)
     submission_df_ood = eval_ood.create_ood_df(all_predictions)
-    submission_df_ood.to_csv("submission_ood.csv", index=False)
-    print("submission_ood.csv created successfully.")
+    model_name = CONFIG["model"]
+    epochs_num = CONFIG["epochs"]
+    submission_df_ood.to_csv(f"submission_ood_{model_name}_{epochs_num}.csv", index=False)
+    print(f"submission_ood_{model_name}_{epochs_num}.csv created successfully.")
 
 if __name__ == '__main__':
     main()
