@@ -19,10 +19,10 @@ CONFIG = {
     # "SimpleCNN" for a manually defined simple network,
     # "ResNet18" for a more sophisticated network,
     # "PretrainedResNet18" for transfer learning.
-    "model": "PretrainedWideResNet101",
-    "batch_size": 8, 
+    "model": "PretrainedResNet18",
+    "batch_size": 64, 
     "learning_rate": 0.1,
-    "epochs": 15,  # Increase for a real training run
+    "epochs": 175,  # Increase for a real training run
     "num_workers": 0,
     "device": "cuda" if torch.cuda.is_available() else "cpu",
     # "device": "cpu",
@@ -33,14 +33,16 @@ CONFIG = {
 }
 
 transform_train = transforms.Compose([
+    transforms.RandomCrop(32, padding=4),
+    transforms.RandomHorizontalFlip(),
     transforms.ToTensor(),
-    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+    transforms.Normalize((0.5071, 0.4867, 0.4408), (0.2675, 0.2565, 0.2761)),
 ])
 
 # Validation and test transforms (no augmentation)
 transform_test = transforms.Compose([
     transforms.ToTensor(),
-    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+    transforms.Normalize((0.5071, 0.4867, 0.4408), (0.2675, 0.2565, 0.2761)),
 ])
 
 ############################################################################
@@ -73,30 +75,34 @@ elif CONFIG["model"] == "PretrainedResNet18":
     model = torchvision.models.resnet18(pretrained=True)
     num_ftrs = model.fc.in_features
     model.fc = nn.Linear(num_ftrs, 100)
+    # for param in list(model.parameters())[:-2]:
+    #     param.requires_grad = False
 elif CONFIG["model"] == "PretrainedResNet50":
     # Transfer learning: start from pretrained ResNet18 and fine-tune
     model = torchvision.models.resnet50(pretrained=True)
     num_ftrs = model.fc.in_features
     model.fc = nn.Linear(num_ftrs, 100)
+    for param in list(model.parameters())[:-2]:
+        param.requires_grad = False
 elif CONFIG["model"] == "PretrainedWideResNet101":
     # Transfer learning: start from pretrained ResNet18 and fine-tune
     model = torch.hub.load('pytorch/vision:v0.10.0', 'wide_resnet101_2', pretrained=True)
     num_ftrs = model.fc.in_features
     model.fc = nn.Linear(num_ftrs, 100)
-else:
-    raise ValueError("Unsupported model type selected.")
+    for param in list(model.parameters())[:-2]:
+        param.requires_grad = False
 
 model = model.to(CONFIG["device"])
 
-state_dict = torch.load('model_ckpts/PretrainedWideResNet101_15.pth', map_location=torch.device(CONFIG["device"]))
-model.load_state_dict(state_dict)
+state_dict = torch.load('model_ckpts/PretrainedResNet18_175.pth', map_location=torch.device(CONFIG["device"]))
+model.load_state_dict(state_dict, strict=False)
 model.eval()
 
 model_name = CONFIG["model"]
 epochs_num = CONFIG["epochs"]
 
 # Clean CIFAR-100 Test Set Evaluation
-predictions, clean_accuracy = eval_cifar100.evaluate_cifar100_test(model, testloader, torch.device(CONFIG["device"]))
+predictions, clean_accuracy = eval_cifar100.evaluate_cifar100_test(model, testloader, torch.device(CONFIG["device"]), 'model_ckpts/PretrainedResNet18_175.pth')
 print(f"Clean CIFAR-100 Test Accuracy: {clean_accuracy:.2f}%")
 
 # OOD Evaluation
@@ -105,4 +111,4 @@ all_predictions = eval_ood.evaluate_ood_test(model, CONFIG)
 # Create Submission File (OOD)
 submission_df_ood = eval_ood.create_ood_df(all_predictions)
 submission_df_ood.to_csv(f"submission_ood_{model_name}_{epochs_num}.csv", index=False)
-print(f"submission_ood_{model_name}_{epochs_num}.csv created successfully.")
+print(f"submission_ood_{model_name}_{epochs_num}.csv created successfully.") 

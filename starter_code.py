@@ -10,6 +10,8 @@ import pandas as pd
 from tqdm.auto import tqdm  # For progress bars
 import wandb
 import json
+import eval_cifar100
+import eval_ood
 
 ################################################################################
 # Model Definition
@@ -95,8 +97,9 @@ def validate(model, valloader, criterion, device):
     return val_loss, val_acc
 
 def unfreeze_layers(model, num_layers):
-    for param in list(model.parameters())[-num_layers:]:
-        param.requires_grad = True
+    for i, (name, param) in enumerate(reversed(list(model.named_parameters()))):
+        if i < num_layers:
+            param.requires_grad = True
 
 def main():
     ############################################################################
@@ -107,10 +110,10 @@ def main():
         # "SimpleCNN" for a manually defined simple network,
         # "ResNet18" for a more sophisticated network,
         # "PretrainedResNet18" for transfer learning.
-        "model": "PretrainedResNet50",
+        "model": "PretrainedResNet18",
         "batch_size": 32, 
         "learning_rate": 0.001,
-        "epochs": 100,  # Increase for a real training run
+        "epochs": 200,  # Increase for a real training run
         "num_workers": 0,
         "device": "cuda" if torch.cuda.is_available() else "cpu",
         "data_dir": "./data",  # Make sure this directory exists
@@ -172,6 +175,8 @@ def main():
         model = torchvision.models.resnet18(pretrained=True)
         num_ftrs = model.fc.in_features
         model.fc = nn.Linear(num_ftrs, 100)
+        for param in list(model.parameters())[:-2]:
+            param.requires_grad = False
     elif CONFIG["model"] == "PretrainedResNet50":
         # Transfer learning: start from pretrained ResNet18 and fine-tune
         model = torchvision.models.resnet50(pretrained=True)
@@ -186,6 +191,8 @@ def main():
         model.fc = nn.Linear(num_ftrs, 100)
         for param in list(model.parameters())[:-2]:
             param.requires_grad = False
+    elif CONFIG["model"] = "pretrainedcifarresent44":
+        model = torch.hub.load("chenyaofo/pytorch-cifar-models", "cifar100_resnet44", pretrained=True)
     else:
         raise ValueError("Unsupported model type selected.")
 
@@ -238,18 +245,30 @@ def main():
 
 
     for epoch in range(CONFIG["epochs"]):
-        if epoch == 40:  # After 30 epochs, unfreeze the last convolutional block
-            unfreeze_layers(model, 33)  # ResNet50's last block has 33 layers
-        elif epoch == 75:  # After 60 epochs, unfreeze all layers
+        if epoch == 75:  # After 30 epochs, unfreeze the last convolutional block
+            unfreeze_layers(model, 21)  # ResNet50's last block has 33 layers
+        elif epoch == 110:  # After 60 epochs, unfreeze all layers
             unfreeze_layers(model, len(list(model.parameters())))
             
         train_loss, train_acc = train(epoch, model, trainloader, optimizer, criterion, CONFIG)
         val_loss, val_acc = validate(model, valloader, criterion, CONFIG["device"])
         scheduler.step()
         # Save the best model based on validation accuracy
-        if int(epoch) % 15 == 0:
+        if int(epoch) % 25 == 0:
             # best_val_acc = val_acc
             torch.save(model.state_dict(), f"model_ckpts/{model_name}_{epoch}.pth")
+            # predictions, clean_accuracy = eval_cifar100.evaluate_cifar100_test(model, testloader, CONFIG["device"])
+            # print(f"Clean CIFAR-100 Test Accuracy: {clean_accuracy:.2f}%")
+
+            # # OOD Evaluation
+            # all_predictions = eval_ood.evaluate_ood_test(model, CONFIG)
+
+            # # Create Submission File (OOD)
+            # submission_df_ood = eval_ood.create_ood_df(all_predictions)
+            # model_name = CONFIG["model"]
+            # epochs_num = CONFIG["epochs"]
+            # submission_df_ood.to_csv(f"submission_ood_{model_name}_{epoch}.csv", index=False)
+            # print(f"submission_ood_{model_name}_{epoch}.csv created successfully.")
             # wandb.save("best_model.pth")
     
     # wandb.finish()
@@ -257,8 +276,8 @@ def main():
     ############################################################################
     # Evaluation -- using provided evaluation functions
     ############################################################################
-    import eval_cifar100
-    import eval_ood
+    # import eval_cifar100
+    # import eval_ood
 
     # Clean CIFAR-100 Test Set Evaluation
     predictions, clean_accuracy = eval_cifar100.evaluate_cifar100_test(model, testloader, CONFIG["device"])
