@@ -256,7 +256,7 @@ def main():
         # Save the best model based on validation accuracy
         if int(epoch) % 25 == 0:
             # best_val_acc = val_acc
-            save_checkpoint(model, optimizer, epoch, val_loss, f"{args.checkpoint_dir}/{model_name}_{epoch}.pth")
+            save_ckpt(model, optimizer, epoch, val_loss, f"{args.checkpoint_dir}/{model_name}_{epoch}.pth")
 
     # Clean CIFAR-100 Test Set Evaluation
     # predictions, clean_accuracy = eval_cifar100.evaluate_cifar100_test(model, testloader, device)
